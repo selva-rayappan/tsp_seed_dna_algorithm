@@ -1,4 +1,4 @@
-# SeedDNAV1: A Parallel Seed-Mining and Dynamic Penalization Metaheuristic for the Traveling Salesperson Problem
+# SeedDNA: A Parallel Seed-Mining and Dynamic Penalization Metaheuristic for the Traveling Salesperson Problem
 
 **Authors:** Selvakumar Rayappan, Antigravity AI  
 **Date:** May 2026  
@@ -8,7 +8,7 @@
 
 ## Abstract
 
-We present **SeedDNAV1**, a novel pattern-mining metaheuristic for the Traveling Salesperson Problem (TSP) inspired by genomic sequence extraction and dynamic reinforcement learning. Traditional metaheuristics, such as Ant Colony Optimization (ACO) and Genetic Algorithms (GA), struggle with high computational complexity and premature convergence at scale. SeedDNAV1 addresses these challenges by generating a pool of localized 2-opt optima, mining frequently repeating node subsequences (Triplet and Pair "Seeds"), dynamically adjusting seed weights via reward and penalization, and stitching the high-weight seeds into a global tour. On a benchmark study across scales of $N \in [10, 60]$ cities over 12 independent datasets per scale, SeedDNAV1 (configured with a route candidate multiplier of $6N$) consistently outperformed Simulated Annealing (SA) and ACO in tour quality, while achieving a **24.5x execution speedup** over ACO (17.3 ms vs. 410.0 ms at $N=60$). We analyze the scaling characteristics, prove polynomial computational complexity, and identify the $6N$ multiplier as the optimal sweet spot for quality-efficiency trade-offs.
+We present **SeedDNA**, a novel pattern-mining metaheuristic for the Traveling Salesperson Problem (TSP) inspired by genomic sequence extraction and dynamic reinforcement learning. Traditional metaheuristics, such as Ant Colony Optimization (ACO) and Genetic Algorithms (GA), struggle with high computational complexity and premature convergence at scale. SeedDNA addresses these challenges by generating a pool of localized 2-opt optima, mining frequently repeating node subsequences (Triplet and Pair "Seeds"), dynamically adjusting seed weights via reward and penalization, and stitching the high-weight seeds into a global tour. On a benchmark study across scales of $N \in [10, 60]$ cities over 12 independent datasets per scale, SeedDNA (configured with a route candidate multiplier of $6N$) consistently outperformed Simulated Annealing (SA) and ACO in tour quality, while achieving a **24.5x execution speedup** over ACO (17.3 ms vs. 410.0 ms at $N=60$). We analyze the scaling characteristics, prove polynomial computational complexity, and identify the $6N$ multiplier as the optimal sweet spot for quality-efficiency trade-offs.
 
 ---
 
@@ -21,13 +21,13 @@ However, metaheuristics exhibit significant limitations:
 2. **Premature Convergence**: GA often loses population diversity, getting trapped in local optima.
 3. **Hyperparameter Sensitivity**: SA requires hand-tuned cooling schedules.
 
-This paper introduces **SeedDNAV1**, an algorithm inspired by genetic sequence alignment. The core hypothesis is that high-quality, independently generated local optima share common sub-path fragments—referred to as "DNA." By mining these repeating fragments (referred to as **Triplet Seeds** and **Pair Seeds**), dynamically updating their weights through iterative performance feedback, and stitching them together, we can construct global tours that surpass standard metaheuristics in both quality and execution speed.
+This paper introduces **SeedDNA**, an algorithm inspired by genetic sequence alignment. The core hypothesis is that high-quality, independently generated local optima share common sub-path fragments—referred to as "DNA." By mining these repeating fragments (referred to as **Triplet Seeds** and **Pair Seeds**), dynamically updating their weights through iterative performance feedback, and stitching them together, we can construct global tours that surpass standard metaheuristics in both quality and execution speed.
 
 ---
 
 ## 2. Methodology
 
-The SeedDNAV1 algorithm operates in four core phases: Candidate Generation, DNA Seed Mining, Dynamic Reinforcement Learning, and Weight-Based Path Stitching.
+The SeedDNA algorithm operates in four core phases: Candidate Generation, DNA Seed Mining, Dynamic Reinforcement Learning, and Weight-Based Path Stitching.
 
 ```mermaid
 graph TD
@@ -52,7 +52,7 @@ Once the $M$ optimized tours are generated and sorted by cost, the algorithm ext
     $$\text{Key}(u, v) = \min((u, v), (v, u))$$
 
 ### 2.3 Dynamic Reinforcement Learning
-Rather than keeping static seeds, SeedDNAV1 updates seed weights dynamically over iterations to balance exploration and exploitation:
+Rather than keeping static seeds, SeedDNA updates seed weights dynamically over iterations to balance exploration and exploitation:
 *   **Reward**: If a seed extracted in iteration $t+1$ already exists in the global seed registry, its weight $W$ is boosted:
     $$W_{t+1} = W_t + 0.6$$
 *   **Penalization**: If a seed is present in a route that exhibits a cost increase in any 3 iterations relative to the best cost in that iteration, it is penalized to prevent local traps:
@@ -69,7 +69,7 @@ In the final step, all registered seeds are sorted by weight in descending order
 
 ## 3. Complexity Analysis
 
-We analyze the worst-case computational complexity of one iteration of SeedDNAV1:
+We analyze the worst-case computational complexity of one iteration of SeedDNA:
 
 1.  **Candidate Generation**: Generating a Nearest Neighbor route takes $O(N^2)$ time. A 2-opt optimization step takes $O(N^2)$ in the average-to-worst case. Running $M = cN$ candidates in parallel on $P$ processors yields a complexity of:
     $$O\left( \frac{c \cdot N^3}{P} \right)$$
@@ -80,13 +80,13 @@ We analyze the worst-case computational complexity of one iteration of SeedDNAV1
 
 ### Comparison with Traditional Solvers:
 *   **ACO**: Pheromone updates and state transitions require $O(\text{Ants} \cdot N^2)$ per step. With $A \approx N$ ants and $I$ steps, the runtime scales as $O(I \cdot N^3)$, which is completely sequential and highly CPU-bound.
-*   **SeedDNAV1**: The heavy lifting ($O(N^3)$ 2-opt searches) is fully decoupled and parallelized, reducing the sequential bottleneck to $O(N^2)$.
+*   **SeedDNA**: The heavy lifting ($O(N^3)$ 2-opt searches) is fully decoupled and parallelized, reducing the sequential bottleneck to $O(N^2)$.
 
 ---
 
 ## 4. Benchmark Section
 
-We evaluated SeedDNAV1 against Greedy, 2-Opt, Simulated Annealing (SA), Genetic Algorithm (GA), and Ant Colony Optimization (ACO) across sizes $N \in \{10, 20, 30, 40, 50, 60\}$ cities. Each size variant was benchmarked across 12 independent, randomly generated coordinate datasets.
+We evaluated SeedDNA against Greedy, 2-Opt, Simulated Annealing (SA), Genetic Algorithm (GA), and Ant Colony Optimization (ACO) across sizes $N \in \{10, 20, 30, 40, 50, 60\}$ cities. Each size variant was benchmarked across 12 independent, randomly generated coordinate datasets.
 
 ### 4.1 Average Tour Costs (Lower is better)
 
@@ -120,7 +120,7 @@ We evaluated SeedDNAV1 against Greedy, 2-Opt, Simulated Annealing (SA), Genetic 
 ## 5. Pseudocode
 
 ```
-Algorithm 1: SeedDNAV1 Metaheuristic
+Algorithm 1: SeedDNA Metaheuristic
 Input: Distance matrix d[][], routeCountMultiplier c, MaxIterations
 Output: Best tour T and its cost C
 
@@ -180,8 +180,8 @@ Output: Best tour T and its cost C
 
 ## 6. Novelty Claims
 
-The primary scientific contributions of the **SeedDNAV1** metaheuristic include:
+The primary scientific contributions of the **SeedDNA** metaheuristic include:
 
-1.  **Parallel Sub-Route Pattern Mining (DNA Extraction)**: Instead of maintaining a single global state or crossing over full parent paths (as in GA), SeedDNAV1 extracts sub-tours (Triplet and Pair seeds) directly from concurrent local searches, preserving high-quality edge blocks.
+1.  **Parallel Sub-Route Pattern Mining (DNA Extraction)**: Instead of maintaining a single global state or crossing over full parent paths (as in GA), SeedDNA extracts sub-tours (Triplet and Pair seeds) directly from concurrent local searches, preserving high-quality edge blocks.
 2.  **Dual-Structure Seed Evolution (Triplet-Pair Hierarchies)**: By dynamically spawning Pair Seeds from frequent Triplet Seeds, the algorithm creates hierarchical path abstractions that prevent early-stage fragmentation during path stitching.
 3.  **Reinforcement-Driven Path Stitching**: The tour reconstruction process is guided by dynamic weight reinforcements (+0.6 reward vs -0.2 penalty), resulting in a linear-time assembly that side-steps the quadratic or cubic selection overhead of conventional metaheuristics.
