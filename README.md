@@ -1,6 +1,6 @@
 # SeedDNA: A Parallel Seed-Mining and Dynamic Penalization Metaheuristic for the Traveling Salesperson Problem
 
-**Authors:** Selvakumar Rayappan, Antigravity AI  
+**Authors:** Selvakumar Rayappan
 **Date:** May 2026  
 **Format:** arXiv Submission Draft  
 
