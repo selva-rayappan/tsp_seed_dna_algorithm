@@ -13,7 +13,7 @@ public class SeedMiningSolver implements TSPSolver {
     private boolean seedMining = true;
     private boolean penalization = true;
     private boolean overlapSeeds = true;
-    private int routeCountMultiplier = 3; // Default scaling multiplier
+    private int routeCountMultiplier = 1; // Default scaling multiplier
 
     // Constructors
     public SeedMiningSolver() {
@@ -127,7 +127,7 @@ public class SeedMiningSolver implements TSPSolver {
 
         @Override
         long getPackedKey() {
-            return (1L << 48) | (((long) nodes[0]) << 32) | (((long) nodes[1]) << 16) | nodes[2];
+            return getPackedSubpathKey(nodes);
         }
     }
 
@@ -154,24 +154,48 @@ public class SeedMiningSolver implements TSPSolver {
 
         @Override
         long getPackedKey() {
-            return (((long) nodes[0]) << 16) | nodes[1];
+            return getPackedSubpathKey(nodes);
         }
     }
 
-    static long getPackedTripletKey(int u, int v, int w) {
-        if (u > w) {
-            return ((long) w << 32) | ((long) v << 16) | u;
-        } else {
-            return ((long) u << 32) | ((long) v << 16) | w;
+    static class GeneralSeed extends Seed {
+        GeneralSeed(int[] nodes) {
+            super(getGeneralKey(nodes), nodes);
+        }
+
+        static String getGeneralKey(int[] nodes) {
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < nodes.length; i++) {
+                sb.append(nodes[i]).append(i == nodes.length - 1 ? "" : "-");
+            }
+            return sb.toString();
+        }
+
+        @Override
+        long getPackedKey() {
+            return getPackedSubpathKey(nodes);
         }
     }
 
-    static long getPackedPairKey(int u, int v) {
-        if (u > v) {
-            return ((long) v << 16) | u;
-        } else {
-            return ((long) u << 16) | v;
+    static int[] canonicalSubpath(int[] nodes) {
+        int L = nodes.length;
+        if (nodes[0] > nodes[L - 1]) {
+            int[] rev = new int[L];
+            for (int j = 0; j < L; j++) {
+                rev[j] = nodes[L - 1 - j];
+            }
+            return rev;
         }
+        return nodes;
+    }
+
+    static long getPackedSubpathKey(int[] nodes) {
+        int L = nodes.length;
+        long key = ((long) L) << 60;
+        for (int j = 0; j < L; j++) {
+            key |= ((long) nodes[j]) << (10 * j);
+        }
+        return key;
     }
 
     // Helper: Reverse a section of the route in place (for 2-opt)
@@ -240,29 +264,227 @@ public class SeedMiningSolver implements TSPSolver {
         return route;
     }
 
-    // Helper: Apply 2-opt local search to a route
-    static void apply2Opt(int[][] graph, int[] route) {
+    // Helper: Compute K-Nearest Neighbors for all cities
+    static int[][] computeNeighborList(int[][] graph, int k) {
         int n = graph.length;
+        int[][] neighborList = new int[n][k];
+        for (int i = 0; i < n; i++) {
+            final int city = i;
+            Integer[] neighbors = new Integer[n - 1];
+            int idx = 0;
+            for (int j = 0; j < n; j++) {
+                if (j != i) {
+                    neighbors[idx++] = j;
+                }
+            }
+            Arrays.sort(neighbors, (a, b) -> Integer.compare(graph[city][a], graph[city][b]));
+            for (int j = 0; j < k; j++) {
+                neighborList[i][j] = neighbors[j];
+            }
+        }
+        return neighborList;
+    }
+
+    // Helper: Apply 2-opt local search to a route using KNN candidate list and
+    // Don't Look Bits (DLB)
+    static void apply2Opt(int[][] graph, int[] route, int[][] neighborList, int maxSwaps) {
+        int n = graph.length;
+        int[] pos = new int[n];
+        for (int idx = 0; idx < n; idx++) {
+            pos[route[idx]] = idx;
+        }
+
+        boolean[] dontLook = new boolean[n];
         boolean improved = true;
+        int swapCount = 0;
         while (improved) {
             improved = false;
             for (int i = 1; i < n - 1; i++) {
                 int prevI = i - 1;
-                for (int j = i + 1; j < n; j++) {
-                    int nextJ = (j == n - 1) ? 0 : j + 1;
-                    if (nextJ == prevI)
+                int u = route[prevI];
+                if (dontLook[u]) {
+                    continue;
+                }
+                int v = route[i];
+                boolean nodeImproved = false;
+                for (int x : neighborList[u]) {
+                    int j = pos[x];
+                    if (j <= i || j >= n) {
                         continue;
-                    int currentEdge1 = graph[route[prevI]][route[i]];
+                    }
+                    int nextJ = (j == n - 1) ? 0 : j + 1;
+                    if (nextJ == prevI) {
+                        continue;
+                    }
+                    int currentEdge1 = graph[u][v];
                     int currentEdge2 = graph[route[j]][route[nextJ]];
-                    int newEdge1 = graph[route[prevI]][route[j]];
-                    int newEdge2 = graph[route[i]][route[nextJ]];
+                    int newEdge1 = graph[u][route[j]];
+                    int newEdge2 = graph[v][route[nextJ]];
                     if (newEdge1 + newEdge2 < currentEdge1 + currentEdge2) {
                         reverse(route, i, j);
+                        for (int k = i; k <= j; k++) {
+                            pos[route[k]] = k;
+                        }
+                        dontLook[u] = false;
+                        dontLook[v] = false;
+                        dontLook[route[j]] = false;
+                        dontLook[route[nextJ]] = false;
                         improved = true;
+                        nodeImproved = true;
+                        swapCount++;
+                        if (maxSwaps > 0 && swapCount >= maxSwaps) {
+                            return;
+                        }
+                        break;
                     }
+                }
+                if (nodeImproved) {
+                    break;
+                } else {
+                    dontLook[u] = true;
                 }
             }
         }
+    }
+
+    static void apply2Opt(int[][] graph, int[] route, int[][] neighborList) {
+        apply2Opt(graph, route, neighborList, -1);
+    }
+
+    static void apply2Opt(int[][] graph, int[] route) {
+        int n = graph.length;
+        int k = Math.min(20, n - 1);
+        int[][] neighborList = computeNeighborList(graph, k);
+        apply2Opt(graph, route, neighborList, -1);
+    }
+
+    static void apply3Opt(int[][] graph, int[] route) {
+        int n = graph.length;
+        int kNeighbor = Math.min(20, n - 1);
+        int[][] neighborList = computeNeighborList(graph, kNeighbor);
+
+        int[] pos = new int[n];
+        for (int i = 0; i < n; i++) {
+            pos[route[i]] = i;
+        }
+
+        boolean improved = true;
+        while (improved) {
+            improved = false;
+            for (int i = 0; i < n; i++) {
+                int A = route[i];
+                for (int nextNeighbor : neighborList[A]) {
+                    int idx = pos[nextNeighbor];
+                    if (idx == i || idx == (i + 1) % n || idx == (i - 1 + n) % n) {
+                        continue;
+                    }
+                    for (int p3 = 0; p3 < n; p3++) {
+                        if (p3 == i || p3 == idx) continue;
+
+                        int iPrime = i;
+                        int jPrime = idx;
+                        int kPrime = p3;
+
+                        if (iPrime > jPrime) { int t = iPrime; iPrime = jPrime; jPrime = t; }
+                        if (jPrime > kPrime) { int t = jPrime; jPrime = kPrime; kPrime = t; }
+                        if (iPrime > jPrime) { int t = iPrime; iPrime = jPrime; jPrime = t; }
+
+                        int nodeA = route[iPrime];
+                        int nodeB = route[(iPrime + 1) % n];
+                        int nodeC = route[jPrime];
+                        int nodeD = route[(jPrime + 1) % n];
+                        int nodeE = route[kPrime];
+                        int nodeF = route[(kPrime + 1) % n];
+
+                        int d0 = graph[nodeA][nodeB] + graph[nodeC][nodeD] + graph[nodeE][nodeF];
+
+                        // Case 1: A -> D ... E -> B ... C -> F
+                        int d1 = graph[nodeA][nodeD] + graph[nodeE][nodeB] + graph[nodeC][nodeF];
+                        if (d1 < d0) {
+                            reconnect3Opt(route, iPrime, jPrime, kPrime, 1);
+                            for (int p = 0; p < n; p++) pos[route[p]] = p;
+                            improved = true;
+                            break;
+                        }
+
+                        // Case 2: A -> D ... E -> C ... B -> F
+                        int d2 = graph[nodeA][nodeD] + graph[nodeE][nodeC] + graph[nodeB][nodeF];
+                        if (d2 < d0) {
+                            reconnect3Opt(route, iPrime, jPrime, kPrime, 2);
+                            for (int p = 0; p < n; p++) pos[route[p]] = p;
+                            improved = true;
+                            break;
+                        }
+
+                        // Case 3: A -> E ... D -> B ... C -> F
+                        int d3 = graph[nodeA][nodeE] + graph[nodeD][nodeB] + graph[nodeC][nodeF];
+                        if (d3 < d0) {
+                            reconnect3Opt(route, iPrime, jPrime, kPrime, 3);
+                            for (int p = 0; p < n; p++) pos[route[p]] = p;
+                            improved = true;
+                            break;
+                        }
+
+                        // Case 4: A -> E ... D -> C ... B -> F
+                        int d4 = graph[nodeA][nodeE] + graph[nodeD][nodeC] + graph[nodeB][nodeF];
+                        if (d4 < d0) {
+                            reconnect3Opt(route, iPrime, jPrime, kPrime, 4);
+                            for (int p = 0; p < n; p++) pos[route[p]] = p;
+                            improved = true;
+                            break;
+                        }
+                    }
+                    if (improved) break;
+                }
+                if (improved) break;
+            }
+        }
+    }
+
+    static void reconnect3Opt(int[] route, int i, int j, int k, int caseNo) {
+        int n = route.length;
+        int[] nextRoute = new int[n];
+        int idx = 0;
+
+        for (int p = 0; p <= i; p++) {
+            nextRoute[idx++] = route[p];
+        }
+
+        if (caseNo == 1) {
+            for (int p = j + 1; p <= k; p++) {
+                nextRoute[idx++] = route[p];
+            }
+            for (int p = i + 1; p <= j; p++) {
+                nextRoute[idx++] = route[p];
+            }
+        } else if (caseNo == 2) {
+            for (int p = j + 1; p <= k; p++) {
+                nextRoute[idx++] = route[p];
+            }
+            for (int p = j; p >= i + 1; p--) {
+                nextRoute[idx++] = route[p];
+            }
+        } else if (caseNo == 3) {
+            for (int p = k; p >= j + 1; p--) {
+                nextRoute[idx++] = route[p];
+            }
+            for (int p = i + 1; p <= j; p++) {
+                nextRoute[idx++] = route[p];
+            }
+        } else if (caseNo == 4) {
+            for (int p = k; p >= j + 1; p--) {
+                nextRoute[idx++] = route[p];
+            }
+            for (int p = j; p >= i + 1; p--) {
+                nextRoute[idx++] = route[p];
+            }
+        }
+
+        for (int p = k + 1; p < n; p++) {
+            nextRoute[idx++] = route[p];
+        }
+
+        System.arraycopy(nextRoute, 0, route, 0, n);
     }
 
     // Helper: Get adjacent edges of a seed as PairSeeds
@@ -284,12 +506,16 @@ public class SeedMiningSolver implements TSPSolver {
             int routeCountMultiplier) {
         int n = graph.length;
         int routeCount = n * routeCountMultiplier;
-        Map<String, Seed> globalSeeds = new LinkedHashMap<>();
+        Map<Long, Seed> globalSeeds = new LinkedHashMap<>();
         int seedCounter = 1;
 
         int maxIterations = graph.length;
         int iter = 0;
         boolean newGroupsFormed = true;
+
+        int kNeighbor = Math.min(20, n - 1);
+        int[][] neighborList = computeNeighborList(graph, kNeighbor);
+        int maxSwaps = Math.max(50, n / 5);
 
         ForkJoinPool customThreadPool = (threads == Runtime.getRuntime().availableProcessors()) ? null
                 : new ForkJoinPool(threads);
@@ -312,7 +538,7 @@ public class SeedMiningSolver implements TSPSolver {
                             .mapToObj(r -> {
                                 Random threadRand = new Random(threadSeeds[r]);
                                 int[] route = generateRandomNNRoute(graph, n, threadRand);
-                                apply2Opt(graph, route);
+                                apply2Opt(graph, route, neighborList, maxSwaps);
                                 return route;
                             })
                             .collect(Collectors.toList());
@@ -323,7 +549,7 @@ public class SeedMiningSolver implements TSPSolver {
                                 .mapToObj(r -> {
                                     Random threadRand = new Random(threadSeeds[r]);
                                     int[] route = generateRandomNNRoute(graph, n, threadRand);
-                                    apply2Opt(graph, route);
+                                    apply2Opt(graph, route, neighborList, maxSwaps);
                                     return route;
                                 })
                                 .collect(Collectors.toList())).get();
@@ -333,7 +559,7 @@ public class SeedMiningSolver implements TSPSolver {
                                 .mapToObj(r -> {
                                     Random threadRand = new Random(threadSeeds[r]);
                                     int[] route = generateRandomNNRoute(graph, n, threadRand);
-                                    apply2Opt(graph, route);
+                                    apply2Opt(graph, route, neighborList, maxSwaps);
                                     return route;
                                 })
                                 .collect(Collectors.toList());
@@ -384,116 +610,89 @@ public class SeedMiningSolver implements TSPSolver {
                 Map<Long, List<Integer>> seedToRouteIndices = new HashMap<>();
                 for (int r = 0; r < sortedRoutes.size(); r++) {
                     int[] route = sortedRoutes.get(r);
-                    for (int i = 0; i < n; i++) {
-                        int u = route[i];
-                        int v = route[i + 1 == n ? 0 : i + 1];
-                        int w = route[(i + 2 >= n) ? (i + 2 - n) : i + 2];
-
-                        // Triplet key
-                        long tKey = (1L << 48) | getPackedTripletKey(u, v, w);
-                        List<Integer> tList = seedToRouteIndices.computeIfAbsent(tKey, k -> new ArrayList<>());
-                        if (tList.isEmpty() || tList.get(tList.size() - 1) != r) {
-                            tList.add(r);
-                        }
-
-                        // Pair keys
-                        long pKey1 = getPackedPairKey(u, v);
-                        List<Integer> pList1 = seedToRouteIndices.computeIfAbsent(pKey1, k -> new ArrayList<>());
-                        if (pList1.isEmpty() || pList1.get(pList1.size() - 1) != r) {
-                            pList1.add(r);
-                        }
-
-                        long pKey2 = getPackedPairKey(v, w);
-                        List<Integer> pList2 = seedToRouteIndices.computeIfAbsent(pKey2, k -> new ArrayList<>());
-                        if (pList2.isEmpty() || pList2.get(pList2.size() - 1) != r) {
-                            pList2.add(r);
+                    for (int L = 2; L <= 3; L++) {
+                        for (int i = 0; i < n; i++) {
+                            int[] sub = new int[L];
+                            for (int j = 0; j < L; j++) {
+                                sub[j] = route[(i + j) % n];
+                            }
+                            int[] canSub = canonicalSubpath(sub);
+                            long key = getPackedSubpathKey(canSub);
+                            List<Integer> list = seedToRouteIndices.computeIfAbsent(key, k -> new ArrayList<>());
+                            if (list.isEmpty() || list.get(list.size() - 1) != r) {
+                                list.add(r);
+                            }
                         }
                     }
                 }
 
-                // 3. Find repeating nodes in group of 3 (triplets)
-                Map<Long, Integer> tripletFreq = new HashMap<>();
-
+                // Identify repeating subpaths of sizes 2 and 3 (frequency >= 2)
+                Map<Long, Integer> subpathFreq = new HashMap<>();
                 for (int[] route : sortedRoutes) {
-                    for (int i = 0; i < n; i++) {
-                        int u = route[i];
-                        int v = route[i + 1 == n ? 0 : i + 1];
-                        int w = route[(i + 2 >= n) ? (i + 2 - n) : i + 2];
-                        long pKey = getPackedTripletKey(u, v, w);
-                        tripletFreq.put(pKey, tripletFreq.getOrDefault(pKey, 0) + 1);
+                    for (int L = 2; L <= 3; L++) {
+                        for (int i = 0; i < n; i++) {
+                            int[] sub = new int[L];
+                            for (int j = 0; j < L; j++) {
+                                sub[j] = route[(i + j) % n];
+                            }
+                            int[] canSub = canonicalSubpath(sub);
+                            long key = getPackedSubpathKey(canSub);
+                            subpathFreq.put(key, subpathFreq.getOrDefault(key, 0) + 1);
+                        }
                     }
                 }
 
-                // Identify repeating triplets in current iteration (frequency >= 2)
-                List<TripletSeed> currentIterationSeeds = new ArrayList<>();
-                for (Map.Entry<Long, Integer> entry : tripletFreq.entrySet()) {
+                List<Seed> currentIterationSeeds = new ArrayList<>();
+                for (Map.Entry<Long, Integer> entry : subpathFreq.entrySet()) {
                     if (entry.getValue() >= 2) {
                         long packed = entry.getKey();
-                        int n0 = (int) (packed >> 32) & 0xFFFF;
-                        int n1 = (int) (packed >> 16) & 0xFFFF;
-                        int n2 = (int) packed & 0xFFFF;
-                        currentIterationSeeds.add(new TripletSeed(n0, n1, n2));
+                        int L = (int) (packed >> 60) & 0xF;
+                        int[] nodes = new int[L];
+                        for (int j = 0; j < L; j++) {
+                            nodes[j] = (int) (packed >> (10 * j)) & 0x3FF;
+                        }
+                        currentIterationSeeds.add(new GeneralSeed(nodes));
                     }
                 }
 
-                // 6. Compare seeds from Iteration N and N+1, add weight (+0.6) for repeating
-                // seeds
-                for (TripletSeed ts : currentIterationSeeds) {
-                    if (globalSeeds.containsKey(ts.key)) {
-                        globalSeeds.get(ts.key).weight += 0.6;
-                    } else {
-                        ts.name = "S" + seedCounter++;
-                        List<Integer> rIds = seedToRouteIndices.get(ts.getPackedKey());
-                        ts.bestCost = sortedCosts.get(rIds.get(0));
-                        globalSeeds.put(ts.key, ts);
+                // Add newly discovered seeds to global seeds
+                for (Seed s : currentIterationSeeds) {
+                    long key = s.getPackedKey();
+                    if (!globalSeeds.containsKey(key)) {
+                        s.name = "S" + seedCounter++;
+                        List<Integer> rIds = seedToRouteIndices.get(key);
+                        if (rIds != null && !rIds.isEmpty()) {
+                            s.bestCost = sortedCosts.get(rIds.get(0));
+                        }
+                        globalSeeds.put(key, s);
                         newGroupsFormed = true;
                     }
                 }
 
-                if (overlapSeeds) {
-                    // 7. If there are repeating nodes across existing seeds, name them as separate
-                    // seeds (Pair Seeds)
-                    Map<String, Integer> pairAcrossSeedsCount = new HashMap<>();
-                    Map<String, PairSeed> pairAcrossSeedsObjects = new HashMap<>();
-
-                    for (Seed s : globalSeeds.values()) {
-                        List<PairSeed> edges = getEdges(s);
-                        for (PairSeed ps : edges) {
-                            pairAcrossSeedsCount.put(ps.key, pairAcrossSeedsCount.getOrDefault(ps.key, 0) + 1);
-                            pairAcrossSeedsObjects.put(ps.key, ps);
-                        }
-                    }
-
-                    for (Map.Entry<String, Integer> entry : pairAcrossSeedsCount.entrySet()) {
-                        if (entry.getValue() >= 2) {
-                            String pKey = entry.getKey();
-                            if (!globalSeeds.containsKey(pKey)) {
-                                PairSeed ps = pairAcrossSeedsObjects.get(pKey);
-                                ps.name = "S" + seedCounter++;
-                                List<Integer> rIds = seedToRouteIndices.get(ps.getPackedKey());
-                                ps.bestCost = sortedCosts.get(rIds.get(0));
-                                globalSeeds.put(pKey, ps);
-                                newGroupsFormed = true;
-                            }
-                        }
-                    }
+                // 8. Probabilistic Z-score based weighting (Unified Reward and Penalization)
+                double costSum = 0;
+                for (int cost : sortedCosts) {
+                    costSum += cost;
+                }
+                double mean = costSum / sortedCosts.size();
+                double sumSq = 0;
+                for (int cost : sortedCosts) {
+                    sumSq += (cost - mean) * (cost - mean);
+                }
+                double stdDev = Math.sqrt(sumSq / sortedCosts.size());
+                if (stdDev < 1e-6) {
+                    stdDev = 1.0;
                 }
 
-                if (penalization) {
-                    // 8. Reduce weight (-0.2) for Seeds if they increase the cost in any 3
-                    // iterations
-                    int cMin = sortedCosts.get(0);
-                    for (Seed s : globalSeeds.values()) {
-                        List<Integer> rIds = seedToRouteIndices.get(s.getPackedKey());
-                        if (rIds != null && !rIds.isEmpty()) {
-                            int minCostWithS = sortedCosts.get(rIds.get(0));
-                            if (minCostWithS > cMin) {
-                                s.costIncreaseCount++;
-                                if (s.costIncreaseCount >= 3) {
-                                    s.weight -= 0.2;
-                                }
-                            }
-                        }
+                double beta = 1.0;
+                for (Seed s : globalSeeds.values()) {
+                    List<Integer> rIds = seedToRouteIndices.get(s.getPackedKey());
+                    if (rIds != null && !rIds.isEmpty()) {
+                        int bestR = rIds.get(0);
+                        double z = (sortedCosts.get(bestR) - mean) / stdDev;
+                        double term = Math.exp(-beta * z) - 1.0;
+                        double update = penalization ? term : Math.max(0.0, term);
+                        s.weight += 0.5 * update;
                     }
                 }
             }
@@ -509,7 +708,8 @@ public class SeedMiningSolver implements TSPSolver {
         for (int i = 0; i < n; i++) {
             routeArray[i] = res.route.get(i);
         }
-        apply2Opt(graph, routeArray);
+        apply2Opt(graph, routeArray, neighborList);
+        apply3Opt(graph, routeArray);
         List<Integer> finalRouteList = new ArrayList<>();
         for (int node : routeArray) {
             finalRouteList.add(node);
@@ -518,24 +718,26 @@ public class SeedMiningSolver implements TSPSolver {
     }
 
     // Helper: Finalize route based on seed weights
-    static Result finalizeRoute(int[][] graph, Map<String, Seed> globalSeeds) {
+    // Helper: Finalize route based on seed weights with dynamic decomposition of
+    // seeds up to size 6
+    static Result finalizeRoute(int[][] graph, Map<Long, Seed> globalSeeds) {
         int n = graph.length;
-        List<Seed> sortedSeeds = new ArrayList<>();
+        List<Seed> seedPool = new ArrayList<>();
         for (Seed s : globalSeeds.values()) {
             if (s.weight > 0) {
-                sortedSeeds.add(s);
+                seedPool.add(s);
             }
         }
 
         // Sort: primary key = weight (descending), secondary key = bestCost (ascending)
-        sortedSeeds.sort((a, b) -> {
+        seedPool.sort((a, b) -> {
             int cmp = Double.compare(b.weight, a.weight);
             if (cmp != 0)
                 return cmp;
             return Integer.compare(a.bestCost, b.bestCost);
         });
 
-        if (sortedSeeds.isEmpty()) {
+        if (seedPool.isEmpty()) {
             return pureGreedy(graph);
         }
 
@@ -543,19 +745,21 @@ public class SeedMiningSolver implements TSPSolver {
         boolean[] visited = new boolean[n];
 
         // Seed with highest weight
-        Seed bestSeed = sortedSeeds.get(0);
+        Seed bestSeed = seedPool.get(0);
         for (int node : bestSeed.nodes) {
             path.add(node);
             visited[node] = true;
         }
+        bestSeed.weight = -1.0; // deactivate
 
-        // Build endpoint/node-adjacency list map for fast seed lookups
-        Map<Integer, List<Seed>> seedsByNode = new HashMap<>();
-        for (Seed s : sortedSeeds) {
-            for (int node : s.nodes) {
-                seedsByNode.computeIfAbsent(node, k -> new ArrayList<>()).add(s);
+        // Clean out deactivated seeds from seedPool initially
+        List<Seed> initialPool = new ArrayList<>();
+        for (Seed s : seedPool) {
+            if (s.weight > 0) {
+                initialPool.add(s);
             }
         }
+        seedPool = initialPool;
 
         boolean extended = true;
         while (path.size() < n && extended) {
@@ -563,116 +767,220 @@ public class SeedMiningSolver implements TSPSolver {
             int back = path.get(path.size() - 1);
             int front = path.get(0);
 
-            List<Seed> backCandidates = seedsByNode.getOrDefault(back, Collections.emptyList());
-            List<Seed> frontCandidates = seedsByNode.getOrDefault(front, Collections.emptyList());
+            Seed chosenSeed = null;
+            int chosenType = 0; // 1 = back forward, 2 = back backward, 3 = front forward, 4 = front backward
+            int chosenK = -1;
+            List<Seed> newDecomposedSeeds = new ArrayList<>();
+            boolean poolModified = false;
 
-            // Try back extension first
-            for (Seed s : backCandidates) {
-                if (s instanceof PairSeed) {
-                    int u = s.nodes[0];
-                    int v = s.nodes[1];
-                    if (back == u && !visited[v]) {
-                        path.add(v);
-                        visited[v] = true;
-                        extended = true;
-                        break;
-                    } else if (back == v && !visited[u]) {
-                        path.add(u);
-                        visited[u] = true;
-                        extended = true;
-                        break;
-                    }
-                } else if (s instanceof TripletSeed) {
-                    int u = s.nodes[0];
-                    int v = s.nodes[1];
-                    int w = s.nodes[2];
-                    if (path.size() >= 2) {
-                        int prevBack = path.get(path.size() - 2);
-                        if (prevBack == u && back == v && !visited[w]) {
-                            path.add(w);
-                            visited[w] = true;
-                            extended = true;
-                            break;
-                        }
-                        if (prevBack == w && back == v && !visited[u]) {
-                            path.add(u);
-                            visited[u] = true;
-                            extended = true;
-                            break;
+            for (int idx = 0; idx < seedPool.size(); idx++) {
+                Seed s = seedPool.get(idx);
+                if (s.weight <= 0)
+                    continue;
+
+                int[] nodes = s.nodes;
+                int L = nodes.length;
+
+                int visitedCount = 0;
+                for (int node : nodes) {
+                    if (visited[node])
+                        visitedCount++;
+                }
+
+                if (visitedCount == L) {
+                    s.weight = -1.0;
+                    poolModified = true;
+                    continue;
+                }
+
+                if (visitedCount > 1) {
+                    // Break down!
+                    List<int[]> segments = getUnvisitedSegments(nodes, visited);
+                    for (int[] seg : segments) {
+                        if (seg.length >= 2) {
+                            GeneralSeed segSeed = new GeneralSeed(seg);
+                            segSeed.weight = s.weight * ((double) seg.length / L);
+                            segSeed.bestCost = s.bestCost;
+                            newDecomposedSeeds.add(segSeed);
                         }
                     }
-                    if (back == u && !visited[v] && !visited[w]) {
-                        path.add(v);
-                        path.add(w);
-                        visited[v] = true;
-                        visited[w] = true;
-                        extended = true;
-                        break;
-                    } else if (back == w && !visited[v] && !visited[u]) {
-                        path.add(v);
-                        path.add(u);
-                        visited[v] = true;
-                        visited[u] = true;
-                        extended = true;
+                    s.weight = -1.0;
+                    poolModified = true;
+                    continue;
+                }
+
+                // At this point, visitedCount must be 1.
+                // Find which node in the seed is visited.
+                int k = -1;
+                for (int j = 0; j < L; j++) {
+                    if (visited[nodes[j]]) {
+                        k = j;
                         break;
                     }
+                }
+
+                if (k == -1)
+                    continue;
+
+                if (nodes[k] == back) {
+                    // Check back forward extension
+                    boolean forwardValid = true;
+                    for (int j = 1; j <= k; j++) {
+                        if (path.size() - 1 - j < 0 || nodes[k - j] != path.get(path.size() - 1 - j)) {
+                            forwardValid = false;
+                            break;
+                        }
+                    }
+                    if (forwardValid) {
+                        for (int j = k + 1; j < L; j++) {
+                            if (visited[nodes[j]]) {
+                                forwardValid = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (forwardValid) {
+                        chosenSeed = s;
+                        chosenType = 1;
+                        chosenK = k;
+                        break;
+                    }
+
+                    // Check back backward extension
+                    boolean backwardValid = true;
+                    for (int j = 1; j < L - k; j++) {
+                        if (path.size() - 1 - j < 0 || nodes[k + j] != path.get(path.size() - 1 - j)) {
+                            backwardValid = false;
+                            break;
+                        }
+                    }
+                    if (backwardValid) {
+                        for (int j = k - 1; j >= 0; j--) {
+                            if (visited[nodes[j]]) {
+                                backwardValid = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (backwardValid) {
+                        chosenSeed = s;
+                        chosenType = 2;
+                        chosenK = k;
+                        break;
+                    }
+                }
+
+                if (nodes[k] == front) {
+                    // Check front forward extension (prepending to front)
+                    boolean forwardValid = true;
+                    for (int j = 1; j < L - k; j++) {
+                        if (j >= path.size() || nodes[k + j] != path.get(j)) {
+                            forwardValid = false;
+                            break;
+                        }
+                    }
+                    if (forwardValid) {
+                        for (int j = k - 1; j >= 0; j--) {
+                            if (visited[nodes[j]]) {
+                                forwardValid = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (forwardValid) {
+                        chosenSeed = s;
+                        chosenType = 3;
+                        chosenK = k;
+                        break;
+                    }
+
+                    // Check front backward extension (prepending to front)
+                    boolean backwardValid = true;
+                    for (int j = 1; j <= k; j++) {
+                        if (j >= path.size() || nodes[k - j] != path.get(j)) {
+                            backwardValid = false;
+                            break;
+                        }
+                    }
+                    if (backwardValid) {
+                        for (int j = k + 1; j < L; j++) {
+                            if (visited[nodes[j]]) {
+                                backwardValid = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (backwardValid) {
+                        chosenSeed = s;
+                        chosenType = 4;
+                        chosenK = k;
+                        break;
+                    }
+                }
+
+                // If visitedCount == 1 but we couldn't extend (either because visited node was
+                // in the middle
+                // and didn't align, or prefix/suffix didn't match), break it down!
+                if (chosenSeed == null) {
+                    List<int[]> segments = getUnvisitedSegments(nodes, visited);
+                    for (int[] seg : segments) {
+                        if (seg.length >= 2) {
+                            GeneralSeed segSeed = new GeneralSeed(seg);
+                            segSeed.weight = s.weight * ((double) seg.length / L);
+                            segSeed.bestCost = s.bestCost;
+                            newDecomposedSeeds.add(segSeed);
+                        }
+                    }
+                    s.weight = -1.0;
+                    poolModified = true;
                 }
             }
 
-            if (extended)
-                continue;
-
-            // Try front extension
-            for (Seed s : frontCandidates) {
-                if (s instanceof PairSeed) {
-                    int u = s.nodes[0];
-                    int v = s.nodes[1];
-                    if (front == u && !visited[v]) {
-                        path.add(0, v);
-                        visited[v] = true;
-                        extended = true;
-                        break;
-                    } else if (front == v && !visited[u]) {
-                        path.add(0, u);
-                        visited[u] = true;
-                        extended = true;
-                        break;
+            if (chosenSeed != null) {
+                int[] nodes = chosenSeed.nodes;
+                int L = nodes.length;
+                int k = chosenK;
+                if (chosenType == 1) { // back forward
+                    for (int j = k + 1; j < L; j++) {
+                        path.add(nodes[j]);
+                        visited[nodes[j]] = true;
                     }
-                } else if (s instanceof TripletSeed) {
-                    int u = s.nodes[0];
-                    int v = s.nodes[1];
-                    int w = s.nodes[2];
-                    if (path.size() >= 2) {
-                        int nextFront = path.get(1);
-                        if (front == v && nextFront == w && !visited[u]) {
-                            path.add(0, u);
-                            visited[u] = true;
-                            extended = true;
-                            break;
-                        }
-                        if (front == v && nextFront == u && !visited[w]) {
-                            path.add(0, w);
-                            visited[w] = true;
-                            extended = true;
-                            break;
-                        }
+                } else if (chosenType == 2) { // back backward
+                    for (int j = k - 1; j >= 0; j--) {
+                        path.add(nodes[j]);
+                        visited[nodes[j]] = true;
                     }
-                    if (front == u && !visited[v] && !visited[w]) {
-                        path.add(0, v);
-                        path.add(0, w);
-                        visited[v] = true;
-                        visited[w] = true;
-                        extended = true;
-                        break;
-                    } else if (front == w && !visited[v] && !visited[u]) {
-                        path.add(0, v);
-                        path.add(0, u);
-                        visited[v] = true;
-                        visited[u] = true;
-                        extended = true;
-                        break;
+                } else if (chosenType == 3) { // front forward
+                    for (int j = k - 1; j >= 0; j--) {
+                        path.add(0, nodes[j]);
+                        visited[nodes[j]] = true;
+                    }
+                } else if (chosenType == 4) { // front backward
+                    for (int j = k + 1; j < L; j++) {
+                        path.add(0, nodes[j]);
+                        visited[nodes[j]] = true;
                     }
                 }
+                chosenSeed.weight = -1.0;
+                extended = true;
+            }
+
+            // Remove deactivated seeds and add decomposed seeds
+            if (poolModified || extended || !newDecomposedSeeds.isEmpty()) {
+                List<Seed> nextPool = new ArrayList<>();
+                for (Seed s : seedPool) {
+                    if (s.weight > 0) {
+                        nextPool.add(s);
+                    }
+                }
+                nextPool.addAll(newDecomposedSeeds);
+                nextPool.sort((a, b) -> {
+                    int cmp = Double.compare(b.weight, a.weight);
+                    if (cmp != 0)
+                        return cmp;
+                    return Integer.compare(a.bestCost, b.bestCost);
+                });
+                seedPool = nextPool;
             }
 
             // Fallback greedy
@@ -705,6 +1013,33 @@ public class SeedMiningSolver implements TSPSolver {
         }
 
         return new Result(calculateCost(graph, path), path);
+    }
+
+    static List<int[]> getUnvisitedSegments(int[] nodes, boolean[] visited) {
+        List<int[]> segments = new ArrayList<>();
+        List<Integer> current = new ArrayList<>();
+        for (int node : nodes) {
+            if (!visited[node]) {
+                current.add(node);
+            } else {
+                if (!current.isEmpty()) {
+                    int[] seg = new int[current.size()];
+                    for (int i = 0; i < current.size(); i++) {
+                        seg[i] = current.get(i);
+                    }
+                    segments.add(seg);
+                    current.clear();
+                }
+            }
+        }
+        if (!current.isEmpty()) {
+            int[] seg = new int[current.size()];
+            for (int i = 0; i < current.size(); i++) {
+                seg[i] = current.get(i);
+            }
+            segments.add(seg);
+        }
+        return segments;
     }
 
     // ==========================================
